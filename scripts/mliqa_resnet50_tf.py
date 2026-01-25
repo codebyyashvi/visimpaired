@@ -46,11 +46,11 @@ X_train = df_train['image'].tolist()
 X_val = df_val['image'].tolist()
 X_test = df_test['image'].tolist()
 
-X_train = ['../vizwiz/train/'+f+'.jpg' for f in X_train]
-X_val = ['../vizwiz/val/'+f+'.jpg' for f in X_val]
-X_test = ['../vizwiz/test/'+f+'.jpg' for f in X_test]
+X_train = ['../Dataset/train/train/'+f+'.jpg' for f in X_train]
+X_val = ['../Dataset/val/val/'+f+'.jpg' for f in X_val]
+X_test = ['../Dataset/test/test/'+f+'.jpg' for f in X_test]
 
-train_y_qual = df_train['qual_mos'].tolist()
+train_y_qual = df_train['qual_mos'].tolist()                            
 val_y_qual = df_val['qual_mos'].tolist()
 test_y_qual = df_test['qual_mos'].tolist()
 
@@ -87,9 +87,9 @@ def parse_function(filename, label):
     return image_normalized, label
 
 
-BATCH_SIZE = 128 # Big enough to measure an F1-score
+BATCH_SIZE = 16 # Reduced further to avoid memory issues
 AUTOTUNE = tf.data.experimental.AUTOTUNE # Adapt preprocessing and prefetching dynamically
-SHUFFLE_BUFFER_SIZE = 256 # Shuffle the training data by a chunck of 1024 observations
+SHUFFLE_BUFFER_SIZE = 128 # Shuffle the training data by a chunck of 1024 observations
 
 
 def create_dataset(filenames, label_1, label_2, is_training):
@@ -106,8 +106,8 @@ def create_dataset(filenames, label_1, label_2, is_training):
     dataset = dataset.map(parse_function, num_parallel_calls=AUTOTUNE)
 
     if is_training == True:
-        # This is a small dataset, only load it once, and keep it in memory.
-        dataset = dataset.cache()
+        # Skip caching to save memory
+        # dataset = dataset.cache()
         # Shuffle the data each buffer size
         dataset = dataset.shuffle(buffer_size=SHUFFLE_BUFFER_SIZE)
 
@@ -212,7 +212,7 @@ model.summary()
 model.compile(optimizer=tf.keras.optimizers.Adam(),
               loss={'output_1': 'mse', 'output_2': 'mse'},
  metrics={'output_1':'mse',
-          'output_2':srcc})
+          'output_2':'mse'})
 
 lr = float(sys.argv[3])
 def scheduler(epoch):
@@ -222,13 +222,13 @@ def scheduler(epoch):
         return lr*tf.math.exp(-0.1)
 
 callback = tf.keras.callbacks.LearningRateScheduler(scheduler)
-checkpoint_filepath = "./models/"+model_name+'_checkpoint'
+checkpoint_filepath = "./models/"+model_name+'_checkpoint.weights.h5'
 model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
     filepath=checkpoint_filepath,
     save_weights_only=True,
-    monitor='val_accuracy',
-    mode='max',
-    save_best_only=True)
+    monitor='val_loss',
+    mode='min',
+    save_best_only=False)
 
 start = time.time()
 history = model.fit(train_ds,
