@@ -15,16 +15,19 @@ import tensorflow_hub as hub
 import json
 from scipy.stats import spearmanr
 from datetime import datetime
-from keras.preprocessing import image
+from tensorflow.keras.preprocessing import image
 from PIL import Image
 # from sklearn.preprocessing import MultiLabelBinarizer
 # from sklearn.model_selection import train_test_split
 # from sklearn.calibration import calibration_curve
 from tensorflow.keras import layers
 from tensorflow.keras import models
-from keras import backend as K
+from tensorflow.keras import backend as K
 import sys
 import pickle
+import ssl
+import certifi
+import urllib.request
 
 model_name = sys.argv[1]
 
@@ -46,9 +49,9 @@ X_train = df_train['image'].tolist()
 X_val = df_val['image'].tolist()
 X_test = df_test['image'].tolist()
 
-X_train = ['../vizwiz/train/'+f+'.jpg' for f in X_train]
-X_val = ['../vizwiz/val/'+f+'.jpg' for f in X_val]
-X_test = ['../vizwiz/test/'+f+'.jpg' for f in X_test]
+X_train = ['../Dataset/Vizwiz-Data/train/'+f+'.jpg' for f in X_train]
+X_val = ['../Dataset/Vizwiz-Data/val/'+f+'.jpg' for f in X_val]
+X_test = ['../Dataset/Vizwiz-Data/test/'+f+'.jpg' for f in X_test]
 
 train_y_qual = df_train['qual_mos'].tolist()
 val_y_qual = df_val['qual_mos'].tolist()
@@ -127,6 +130,11 @@ test_ds = create_dataset(X_test, test_y_flaw, test_y_qual, is_training=False)
 # feature_extractor_url = "https://tfhub.dev/google/imagenet/resnet_v2_50/feature_vector/4"
 # feature_extractor_layer = hub.KerasLayer(feature_extractor_url, input_shape=(IMG_SIZE,IMG_SIZE,CHANNELS))
 
+# Install an HTTPS opener that uses certifi's CA bundle so weight downloads verify correctly
+ssl_context = ssl.create_default_context(cafile=certifi.where())
+opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ssl_context))
+urllib.request.install_opener(opener)
+
 base_model = tf.keras.applications.MobileNetV2(input_shape=(IMG_SIZE,IMG_SIZE,CHANNELS),
                                                include_top=False,
                                                weights='imagenet')
@@ -181,6 +189,11 @@ def srcc(y_true, y_pred):
 LR = 1e-5 # Keep it small when transfer learning
 EPOCHS = int(sys.argv[2])
 
+# Install an HTTPS opener that uses certifi's CA bundle
+ssl_context = ssl.create_default_context(cafile=certifi.where())
+opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ssl_context))
+urllib.request.install_opener(opener)
+
 def build_model():
     # Define model layers.
     input_layer = layers.Input(shape=(IMG_SIZE,IMG_SIZE,CHANNELS))
@@ -206,13 +219,30 @@ def build_model():
 
     return model
 
-model=build_model()
+# Resume training support: save latest model and epoch so training can continue
+latest_model_path = "./models/" + model_name + "_latest.h5"
+epoch_file = "./models/" + model_name + "_epoch.txt"
+initial_epoch = 0
+
+if os.path.exists(latest_model_path):
+    print("Loading latest model for resuming training...")
+    model = tf.keras.models.load_model(latest_model_path, compile=False)
+    if os.path.exists(epoch_file):
+        with open(epoch_file, 'r') as f:
+            try:
+                initial_epoch = int(f.read().strip())
+            except Exception:
+                initial_epoch = 0
+    print(f"Resuming training from epoch {initial_epoch}")
+else:
+    model = build_model()
+
 model.summary()
 
 model.compile(optimizer=tf.keras.optimizers.Adam(),
               loss={'output_1': 'mse', 'output_2': 'mse'},
- metrics={'output_1':'mse',
-          'output_2':srcc})
+              metrics={'output_1': 'mse',
+                       'output_2': 'mse'})
 
 lr = float(sys.argv[3])
 def scheduler(epoch):
@@ -221,8 +251,17 @@ def scheduler(epoch):
     else:
         return lr*tf.math.exp(-0.1)
 
+
+class SaveEpochCallback(tf.keras.callbacks.Callback):
+    def on_epoch_end(self, epoch, logs=None):
+        # Save the full model and next epoch index
+        model.save(latest_model_path)
+        with open(epoch_file, 'w') as f:
+            f.write(str(epoch + 1))
+
 callback = tf.keras.callbacks.LearningRateScheduler(scheduler)
-checkpoint_filepath = "./models/"+model_name+'_checkpoint'
+os.makedirs("./models", exist_ok=True)
+checkpoint_filepath = "./models/"+model_name+'.weights.h5'
 model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
     filepath=checkpoint_filepath,
     save_weights_only=True,
@@ -231,10 +270,19 @@ model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
     save_best_only=True)
 
 start = time.time()
-history = model.fit(train_ds,
-                    epochs=EPOCHS,
-                    callbacks=[callback,model_checkpoint_callback],
-                    validation_data=val_ds)
+try:
+    history = model.fit(train_ds,
+                        epochs=EPOCHS,
+                        initial_epoch=initial_epoch,
+                        callbacks=[callback, model_checkpoint_callback, SaveEpochCallback()],
+                        validation_data=val_ds)
+except KeyboardInterrupt:
+    print("Training interrupted, saving current model...")
+    model.save(latest_model_path)
+    with open(epoch_file, 'w') as f:
+        f.write(str(initial_epoch + 1))
+    sys.exit(0)
+
 print('\nTraining took {}'.format(time.time()-start))
 
 export_path = "./models/"+model_name+".h5"

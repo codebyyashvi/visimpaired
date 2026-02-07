@@ -28,9 +28,6 @@ import pickle
 
 model_name = sys.argv[1]
 
-warnings.filterwarnings('ignore')
-logging.getLogger("tensorflow").setLevel(logging.ERROR)
-
 # with open('quality.json') as json_file:
 #     data = json.load(json_file)
 
@@ -46,11 +43,11 @@ X_train = df_train['image'].tolist()
 X_val = df_val['image'].tolist()
 X_test = df_test['image'].tolist()
 
-X_train = ['../Dataset/train/train/'+f+'.jpg' for f in X_train]
-X_val = ['../Dataset/val/val/'+f+'.jpg' for f in X_val]
-X_test = ['../Dataset/test/test/'+f+'.jpg' for f in X_test]
+X_train = ['../Dataset/Vizwiz-Data/train/'+f+'.jpg' for f in X_train]
+X_val = ['../Dataset/Vizwiz-Data/val/'+f+'.jpg' for f in X_val]
+X_test = ['../Dataset/Vizwiz-Data/test/'+f+'.jpg' for f in X_test]
 
-train_y_qual = df_train['qual_mos'].tolist()                            
+train_y_qual = df_train['qual_mos'].tolist()
 val_y_qual = df_val['qual_mos'].tolist()
 test_y_qual = df_test['qual_mos'].tolist()
 
@@ -87,9 +84,9 @@ def parse_function(filename, label):
     return image_normalized, label
 
 
-BATCH_SIZE = 16 # Reduced further to avoid memory issues
+BATCH_SIZE = 128 # Big enough to measure an F1-score
 AUTOTUNE = tf.data.experimental.AUTOTUNE # Adapt preprocessing and prefetching dynamically
-SHUFFLE_BUFFER_SIZE = 128 # Shuffle the training data by a chunck of 1024 observations
+SHUFFLE_BUFFER_SIZE = 256 # Shuffle the training data by a chunck of 1024 observations
 
 
 def create_dataset(filenames, label_1, label_2, is_training):
@@ -106,8 +103,8 @@ def create_dataset(filenames, label_1, label_2, is_training):
     dataset = dataset.map(parse_function, num_parallel_calls=AUTOTUNE)
 
     if is_training == True:
-        # Skip caching to save memory
-        # dataset = dataset.cache()
+        # This is a small dataset, only load it once, and keep it in memory.
+        dataset = dataset.cache()
         # Shuffle the data each buffer size
         dataset = dataset.shuffle(buffer_size=SHUFFLE_BUFFER_SIZE)
 
@@ -129,7 +126,7 @@ test_ds = create_dataset(X_test, test_y_flaw, test_y_qual, is_training=False)
 
 base_model = tf.keras.applications.ResNet50V2(input_shape=(IMG_SIZE,IMG_SIZE,CHANNELS),
                                                include_top=False,
-                                               weights='imagenet')
+                                               weights=None)
 # # Fine-tune from this layer onwards
 # fine_tune_at = 125
 #
@@ -175,8 +172,9 @@ def pearson_r(y_true, y_pred):
     return K.mean(r)
 
 def srcc(y_true, y_pred):
-     return ( tf.py_function(spearmanr, [tf.cast(y_pred, tf.float32),
-                       tf.cast(y_true, tf.float32)], Tout = tf.float32) )
+    corr = tf.py_function(lambda y_true, y_pred: spearmanr(y_pred, y_true)[0], [y_true, y_pred], Tout=tf.float32)
+    corr.set_shape([])
+    return corr
 
 LR = 1e-5 # Keep it small when transfer learning
 EPOCHS = int(sys.argv[2])
@@ -206,13 +204,28 @@ def build_model():
 
     return model
 
-model=build_model()
+os.makedirs("./models/", exist_ok=True)
+
+latest_model_path = "./models/"+model_name+"_latest.h5"
+epoch_file = "./models/"+model_name+"_epoch.txt"
+initial_epoch = 0
+
+if os.path.exists(latest_model_path):
+    print("Loading latest model for resuming training...")
+    model = tf.keras.models.load_model(latest_model_path, custom_objects={'srcc': srcc}, compile=False)
+    if os.path.exists(epoch_file):
+        with open(epoch_file, 'r') as f:
+            initial_epoch = int(f.read().strip())
+    print(f"Resuming training from epoch {initial_epoch}")
+else:
+    model = build_model()
+
 model.summary()
 
 model.compile(optimizer=tf.keras.optimizers.Adam(),
               loss={'output_1': 'mse', 'output_2': 'mse'},
  metrics={'output_1':'mse',
-          'output_2':'mse'})
+          'output_2':srcc})
 
 lr = float(sys.argv[3])
 def scheduler(epoch):
@@ -221,20 +234,34 @@ def scheduler(epoch):
     else:
         return lr*tf.math.exp(-0.1)
 
+class SaveEpochCallback(tf.keras.callbacks.Callback):
+    def on_epoch_end(self, epoch, logs=None):
+        model.save(latest_model_path)
+        with open(epoch_file, 'w') as f:
+            f.write(str(epoch + 1))
+
 callback = tf.keras.callbacks.LearningRateScheduler(scheduler)
 checkpoint_filepath = "./models/"+model_name+'_checkpoint.weights.h5'
 model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
     filepath=checkpoint_filepath,
     save_weights_only=True,
-    monitor='val_loss',
-    mode='min',
-    save_best_only=False)
+    monitor='val_accuracy',
+    mode='max',
+    save_best_only=True)
 
 start = time.time()
-history = model.fit(train_ds,
-                    epochs=EPOCHS,
-                    callbacks=[callback,model_checkpoint_callback],
-                    validation_data=val_ds)
+try:
+    history = model.fit(train_ds,
+                        epochs=EPOCHS,
+                        initial_epoch=initial_epoch,
+                        callbacks=[callback, model_checkpoint_callback, SaveEpochCallback()],
+                        validation_data=val_ds)
+except KeyboardInterrupt:
+    print("Training interrupted, saving current model...")
+    model.save(latest_model_path)
+    with open(epoch_file, 'w') as f:
+        f.write(str(initial_epoch + 1))  # start next epoch
+    sys.exit(0)
 print('\nTraining took {}'.format(time.time()-start))
 
 export_path = "./models/"+model_name+".h5"

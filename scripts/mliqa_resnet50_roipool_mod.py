@@ -13,18 +13,21 @@ import tensorflow_hub as hub
 import json
 from scipy.stats import spearmanr
 from datetime import datetime
-from keras.preprocessing import image
+from tensorflow.keras.preprocessing import image
 from PIL import Image
 # from sklearn.preprocessing import MultiLabelBinarizer
 # from sklearn.model_selection import train_test_split
 # from sklearn.calibration import calibration_curve
 from tensorflow.keras import layers
 from tensorflow.keras import models
-from keras import backend as K
-from tensorflow.python.keras.layers import Layer
+from tensorflow.keras import backend as K
+from tensorflow.keras.layers import Layer
 import sys
 import pickle
 import ast
+import ssl
+import certifi
+import urllib.request
 
 model_name = sys.argv[1]
 
@@ -38,9 +41,9 @@ logging.getLogger("tensorflow").setLevel(logging.ERROR)
 # X_train = data['train']['image']
 # X_val = data['val']['image']
 
-df_Tr = pd.read_csv('../vizwiz/master_data_train.csv')
-df_Va = pd.read_csv('../vizwiz/master_data_val.csv')
-df_Ts = pd.read_csv('../vizwiz/master_data_test.csv')
+df_Tr = pd.read_csv('../Dataset/Vizwiz-Data/master_data_train.csv')
+df_Va = pd.read_csv('../Dataset/Vizwiz-Data/master_data_val.csv')
+df_Ts = pd.read_csv('../Dataset/Vizwiz-Data/master_data_test.csv')
 
 if type == 'rand':
     df_train = df_Tr.loc[df_Tr['type'] == 'rand']
@@ -146,9 +149,9 @@ for i in range(len(test_img_dist)):
     test_dist_label.append(tmp_label)
 
 
-X_train = ['../vizwiz/train/'+f+'.jpg' for f in X_train]
-X_val = ['../vizwiz/val/'+f+'.jpg' for f in X_val]
-X_test = ['../vizwiz/test/'+f+'.jpg' for f in X_test]
+X_train = ['../Dataset/Vizwiz-Data/train/'+f+'.jpg' for f in X_train]
+X_val = ['../Dataset/Vizwiz-Data/val/'+f+'.jpg' for f in X_val]
+X_test = ['../Dataset/Vizwiz-Data/test/'+f+'.jpg' for f in X_test]
 
 df_train['rescaled_448_coord'] = df_train['rescaled_448_coord'].apply(ast.literal_eval)
 X_roi_train = []
@@ -231,6 +234,12 @@ test_ds = create_dataset(X_test, X_roi_test, test_qual_label, test_dist_label, i
 # feature_extractor_url = "https://tfhub.dev/google/imagenet/resnet_v2_50/feature_vector/4"
 # feature_extractor_layer = hub.KerasLayer(feature_extractor_url, input_shape=(IMG_SIZE,IMG_SIZE,CHANNELS))
 
+# Install an HTTPS opener that uses certifi's CA bundle so urllib requests
+# (used by Keras `get_file`) verify certificates correctly in constrained envs.
+ssl_context = ssl.create_default_context(cafile=certifi.where())
+opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ssl_context))
+urllib.request.install_opener(opener)
+
 base_model = tf.keras.applications.ResNet50V2(input_shape=(IMG_SIZE,IMG_SIZE,CHANNELS),
                                                include_top=False,
                                                weights='imagenet')
@@ -266,6 +275,25 @@ def macro_f1(y, y_hat, thresh=0.5):
     return macro_f1
 
 def pearson_r(y_true, y_pred):
+    # Handle numpy arrays (when called after predictions)
+    try:
+        is_numpy = isinstance(y_true, np.ndarray) or isinstance(y_pred, np.ndarray)
+    except Exception:
+        is_numpy = False
+
+    if is_numpy:
+        y_true_flat = np.asarray(y_true).flatten()
+        y_pred_flat = np.asarray(y_pred).flatten()
+        if y_true_flat.size == 0 or y_pred_flat.size == 0:
+            return 0.0
+        if y_true_flat.shape[0] != y_pred_flat.shape[0]:
+            minlen = min(y_true_flat.shape[0], y_pred_flat.shape[0])
+            y_true_flat = y_true_flat[:minlen]
+            y_pred_flat = y_pred_flat[:minlen]
+        # Use numpy's correlation coefficient
+        return float(np.corrcoef(y_true_flat, y_pred_flat)[0, 1])
+
+    # Fallback: Keras tensor implementation for use as a metric in-model
     x = y_true
     y = y_pred
     mx = K.mean(x, axis=0)
@@ -279,17 +307,21 @@ def pearson_r(y_true, y_pred):
     return K.mean(r)
 
 def srcc(y_true, y_pred):
-     return ( tf.py_function(spearmanr, [tf.cast(y_pred, tf.float32),
-                       tf.cast(y_true, tf.float32)], Tout = tf.float32) )
+     # Flatten to 1-D for spearmanr (which only handles 1-D or 2-D arrays)
+     y_true_flat = tf.reshape(y_true, [-1])
+     y_pred_flat = tf.reshape(y_pred, [-1])
+     result = tf.py_function(spearmanr, [tf.cast(y_pred_flat, tf.float32),
+                       tf.cast(y_true_flat, tf.float32)], Tout = tf.float32)
+     # Set shape so metrics reduction can work properly
+     result.set_shape(())
+     return result
 
 LR = 1e-5 # Keep it small when transfer learning
 EPOCHS = int(sys.argv[2])
 
-from tensorflow.python.keras.layers import Layer
-import keras.backend as K
+from tensorflow.keras.layers import Layer
 
-if K.backend() == 'tensorflow':
-    import tensorflow as tf
+# Ensure we consistently use `tf.keras.backend` as `K` (already imported above).
 
 class RoiPoolingConv(Layer):
     def __init__(self, pool_size, num_rois, **kwargs):
@@ -313,7 +345,7 @@ class RoiPoolingConv(Layer):
         img = x[0]
         rois = x[1]
 
-        input_shape = K.shape(img)
+        input_shape = tf.shape(img)
 
 
         #for roi_idx in range(self.num_rois):
@@ -332,8 +364,10 @@ class RoiPoolingConv(Layer):
 
         rs = tf.image.resize(img[:, y:y+h, x:x+w, :], (self.pool_size, self.pool_size))
 
-        #final_output = K.reshape(rs, (1, self.pool_size, self.pool_size, self.nb_channels))
-        final_output = rs
+        # Reshape to include num_rois dimension: [batch, pool_size, pool_size, channels]
+        # becomes [batch, num_rois, pool_size, pool_size, channels]
+        batch_size = K.shape(img)[0]
+        final_output = K.reshape(rs, (batch_size, self.num_rois, self.pool_size, self.pool_size, self.nb_channels))
         return final_output
 
 
@@ -351,7 +385,7 @@ def build_model():
 
     pooling_regions = 2
 
-    input_rois = layers.Input(shape=(4), name='input_rois')
+    input_rois = layers.Input(shape=(4,), name='input_rois')
     input_layer = layers.Input(shape=(IMG_SIZE,IMG_SIZE,CHANNELS), name='input_layer')
 
     # out_roi_pool.shape = (1, num_rois, channels, pool_size, pool_size)
@@ -395,8 +429,8 @@ model.summary()
 
 model.compile(optimizer=tf.keras.optimizers.Adam(),
               loss={'output_1': 'mse', 'output_2': 'mse'},
- metrics={'output_1':srcc,
-          'output_2':'mse'})
+              metrics={'output_1': 'mse',
+                       'output_2': 'mse'})
 
 lr = float(sys.argv[3])
 def scheduler(epoch):
@@ -405,8 +439,44 @@ def scheduler(epoch):
     else:
         return lr*tf.math.exp(-0.1)
 
+os.makedirs("./models/", exist_ok=True)
+
+latest_model_path = "./models/"+model_name+"_latest.h5"
+epoch_file = "./models/"+model_name+"_epoch.txt"
+initial_epoch = 0
+
+if os.path.exists(latest_model_path):
+    print("Loading latest model for resuming training...")
+    model = tf.keras.models.load_model(latest_model_path, custom_objects={'RoiPoolingConv': RoiPoolingConv, 'srcc': srcc}, compile=False)
+    if os.path.exists(epoch_file):
+        with open(epoch_file, 'r') as f:
+            initial_epoch = int(f.read().strip())
+    print(f"Resuming training from epoch {initial_epoch}")
+else:
+    model = build_model()
+
+model.summary()
+
+model.compile(optimizer=tf.keras.optimizers.Adam(),
+              loss={'output_1': 'mse', 'output_2': 'mse'},
+              metrics={'output_1': 'mse',
+                       'output_2': 'mse'})
+
+lr = float(sys.argv[3])
+def scheduler(epoch):
+    if epoch < 5:
+        return lr
+    else:
+        return lr*tf.math.exp(-0.1)
+
+class SaveEpochCallback(tf.keras.callbacks.Callback):
+    def on_epoch_end(self, epoch, logs=None):
+        model.save(latest_model_path)
+        with open(epoch_file, 'w') as f:
+            f.write(str(epoch + 1))
+
 callback = tf.keras.callbacks.LearningRateScheduler(scheduler)
-checkpoint_filepath = "./models/"+model_name+'_checkpoint'
+checkpoint_filepath = "./models/" + model_name + '.weights.h5'
 model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
     filepath=checkpoint_filepath,
     save_weights_only=True,
@@ -415,10 +485,18 @@ model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
     save_best_only=True)
 
 start = time.time()
-history = model.fit(train_ds,
-                    epochs=EPOCHS,
-                    callbacks=[callback,model_checkpoint_callback],
-                    validation_data=val_ds)
+try:
+    history = model.fit(train_ds,
+                        epochs=EPOCHS,
+                        initial_epoch=initial_epoch,
+                        callbacks=[callback, model_checkpoint_callback, SaveEpochCallback()],
+                        validation_data=val_ds)
+except KeyboardInterrupt:
+    print("Training interrupted, saving current model...")
+    model.save(latest_model_path)
+    with open(epoch_file, 'w') as f:
+        f.write(str(initial_epoch + 1))  # start next epoch
+    sys.exit(0)
 print('\nTraining took {}'.format(time.time()-start))
 
 export_path = "./models/"+model_name+".h5"
@@ -433,28 +511,59 @@ with open(history_path, 'wb') as f:
 
 
 y_pred = model.predict(test_ds)
+
+# Robustly extract outputs and make 1-D prediction arrays that align with test labels
+if isinstance(y_pred, (list, tuple)) and len(y_pred) >= 1:
+    out1 = np.asarray(y_pred[0])
+else:
+    out1 = np.asarray(y_pred)
+
+out2 = None
+if isinstance(y_pred, (list, tuple)) and len(y_pred) > 1:
+    out2 = np.asarray(y_pred[1])
+
+# Squeeze trailing singleton dimensions
+out1_squeezed = np.squeeze(out1)
+if out2 is not None:
+    out2_squeezed = np.squeeze(out2)
+else:
+    out2_squeezed = None
+
+# If roi dimension exists (e.g. shape (N, num_rois, 1)), average across rois
+if out1_squeezed.ndim == 2:
+    img_qual_pred = out1_squeezed.mean(axis=1)
+else:
+    img_qual_pred = out1_squeezed
+
+if out2_squeezed is not None:
+    if out2_squeezed.ndim == 3:
+        # (N, num_rois, 7) -> (N,7)
+        out2_squeezed = out2_squeezed.mean(axis=1)
+
+# Ensure numpy arrays and correct dtypes
+img_qual_pred = np.asarray(img_qual_pred).astype(float)
+test_img_qual_arr = np.asarray(test_img_qual).astype(float)
+
+# If lengths mismatch, try to flatten or trim to match; warn the user
+if img_qual_pred.shape[0] != test_img_qual_arr.shape[0]:
+    # try flattening
+    img_qual_flat = img_qual_pred.flatten()
+    if img_qual_flat.shape[0] == test_img_qual_arr.shape[0]:
+        img_qual_pred = img_qual_flat
+    else:
+        # final fallback: trim or pad (trim here)
+        minlen = min(img_qual_flat.shape[0], test_img_qual_arr.shape[0])
+        img_qual_pred = img_qual_flat[:minlen]
+        test_img_qual_arr = test_img_qual_arr[:minlen]
+        print(f'Warning: prediction/label length mismatch; trimmed to {minlen} samples')
+
+# Save cleaned prediction arrays for further analysis
 with open('test_img_qual_'+model_name+'.npy', 'wb') as f:
-    np.save(f, y_pred[0][0])
-with open('test_patch_qual_'+model_name+'.npy', 'wb') as f:
-    np.save(f, y_pred[0][1])
+    np.save(f, img_qual_pred)
 
-with open('test_img_dist_'+model_name+'.npy', 'wb') as f:
-    np.save(f, y_pred[1][0])
-with open('test_patch_dist_'+model_name+'.npy', 'wb') as f:
-    np.save(f, y_pred[1][1])
+if out2_squeezed is not None:
+    with open('test_img_dist_'+model_name+'.npy', 'wb') as f:
+        np.save(f, out2_squeezed)
 
-
-# qual_pred = y_pred[1]
-img_qual_pred = []
-for i in range(len(y_pred[0][0])):
-    img_qual_pred.append(y_pred[0][i][0])
-
-patch_qual_pred = []
-for i in range(len(y_pred[0][1])):
-    img_qual_pred.append(y_pred[1][i][0])
-
-# print(val_y_qual)
-# print(y_qual_pred)
-
-print('Image SRCC: ', spearmanr(test_img_qual, img_qual_pred))
-print('Image LCC: ', pearsonr(test_img_qual, img_qual_pred))
+print('Image SRCC: ', spearmanr(test_img_qual_arr, img_qual_pred))
+print('Image LCC: ', pearson_r(test_img_qual_arr, img_qual_pred))
