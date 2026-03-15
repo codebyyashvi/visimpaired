@@ -3,3 +3,4 @@ test/
 train/
 models/
 test_models/
+scripts/__pycache__/

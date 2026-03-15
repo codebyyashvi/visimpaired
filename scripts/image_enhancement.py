@@ -28,20 +28,21 @@ class ImageEnhancer:
         }
     
     @staticmethod
-    def bilateral_denoise(image: np.ndarray, diameter: int = 15, 
-                         sigma_color: float = 80, sigma_space: float = 80) -> np.ndarray:
+    def bilateral_denoise(image: np.ndarray, diameter: int = 7, 
+                         sigma_color: float = 50, sigma_space: float = 50) -> np.ndarray:
         """
-        Bilateral filtering - reduces noise while preserving edges (AGGRESSIVE VERSION)
-        Best for: Moderate noise, edge preservation
+        Bilateral filtering - light denoising while preserving edges AND COLORS
+        OPTIMIZED: Brightness-only processing to prevent color shifts
+        Best for: Blurry images with gentle noise
         
         Args:
             image: Input image (BGR or RGB)
-            diameter: Pixel neighborhood diameter (increased from 9 to 15)
-            sigma_color: Filter sigma in the color space (increased from 75 to 80)
-            sigma_space: Filter sigma in the coordinate space (increased from 75 to 80)
+            diameter: Pixel neighborhood diameter (reduced to 7 for minimal smoothing)
+            sigma_color: Filter sigma in the color space (reduced to 50)
+            sigma_space: Filter sigma in the coordinate space (reduced to 50)
         
         Returns:
-            Denoised image
+            Denoised image (colors preserved)
         """
         # Ensure uint8 format
         if image.dtype != np.uint8:
@@ -49,17 +50,41 @@ class ImageEnhancer:
         else:
             image_work = image.copy()
         
-        # Apply bilateral filter twice for stronger denoising
-        denoised = cv2.bilateralFilter(image_work, diameter, sigma_color, sigma_space)
-        denoised = cv2.bilateralFilter(denoised, diameter, sigma_color, sigma_space)
-        
-        # Add sharpening
-        blurred = cv2.GaussianBlur(denoised, (0, 0), 1.0)
-        sharpened = cv2.addWeighted(denoised, 1.4, blurred, -0.4, 0)
+        # Work in LAB color space - denoise ONLY brightness channel!
+        if len(image_work.shape) == 2:  # Grayscale
+            # Apply bilateral filter to grayscale
+            denoised = cv2.bilateralFilter(image_work, diameter, sigma_color, sigma_space)
+            
+            # Main technique: Smart unsharp masking for sharpening
+            blurred = cv2.GaussianBlur(denoised, (0, 0), 1.5)
+            high_pass = cv2.subtract(denoised, blurred)
+            sharpened = cv2.addWeighted(denoised, 1.0, high_pass, 2.0, 0)
+            
+        else:  # Color image - denoise ONLY brightness channel!
+            # Convert to LAB color space
+            lab = cv2.cvtColor(image_work, cv2.COLOR_BGR2LAB)
+            L, A, B = cv2.split(lab)
+            
+            # Bilateral filter ONLY on L channel
+            L_denoised = cv2.bilateralFilter(L, diameter, sigma_color, sigma_space)
+            
+            # Unsharp masking ONLY on L channel
+            L_blurred = cv2.GaussianBlur(L_denoised, (0, 0), 1.5)
+            L_high_pass = cv2.subtract(L_denoised, L_blurred)
+            L_sharpened = cv2.addWeighted(L_denoised, 1.0, L_high_pass, 2.0, 0)
+            
+            # Clip brightness channel
+            L_sharpened = np.clip(L_sharpened, 0, 255).astype(np.uint8)
+            
+            # Recombine with ORIGINAL A and B channels (colors unchanged!)
+            lab_enhanced = cv2.merge([L_sharpened, A, B])
+            sharpened = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
         
         # Convert back if needed
         if image.dtype != np.uint8:
             sharpened = sharpened.astype(np.float32) / 255.0
+        else:
+            sharpened = np.clip(sharpened, 0, 255).astype(np.uint8)
         
         return sharpened
     
@@ -140,15 +165,16 @@ class ImageEnhancer:
     @staticmethod
     def aggressive_enhancement(image: np.ndarray) -> np.ndarray:
         """
-        ULTIMATE AGGRESSIVE enhancement for heavily blurry/distorted images
-        Multi-step pipeline: Denoise → Sharpen → Enhance → Restore Details
-        BEST FOR: Your blurry, distorted dataset - MAXIMUM IMPROVEMENT
+        🔥 ULTRA AGGRESSIVE ENHANCEMENT - Maximum clarity and sharpness!
+        Focus: EXTREME unsharp masking + heavy contrast + multi-pass sharpening on BRIGHTNESS ONLY
+        NOTE: Only brightness is enhanced - COLORS REMAIN UNCHANGED!
+        BEST FOR: Very blurry or heavily distorted images - MAXIMUM CLARITY!
         
         Args:
             image: Input image
         
         Returns:
-            Significantly enhanced image
+            Massively enhanced image with maximum clarity (colors preserved)
         """
         # Ensure uint8 format
         if image.dtype != np.uint8:
@@ -156,43 +182,71 @@ class ImageEnhancer:
         else:
             work_image = image.copy()
         
-        # STEP 1: Aggressive denoising with multiple passes
-        denoised = cv2.bilateralFilter(work_image, 15, 100, 100)
-        denoised = cv2.bilateralFilter(denoised, 15, 100, 100)
-        denoised = cv2.bilateralFilter(denoised, 9, 80, 80)
-        
-        # STEP 2: Extreme contrast enhancement
+        # Work in LAB color space - process only L (brightness) channel
         if len(work_image.shape) == 2:  # Grayscale
+            # STEP 1: Minimal denoising to preserve details
+            denoised = cv2.bilateralFilter(work_image, 5, 50, 50)
+            
+            # STEP 2: AGGRESSIVE contrast enhancement
             clahe = cv2.createCLAHE(clipLimit=5.0, tileGridSize=(2, 2))
             contrasted = clahe.apply(denoised)
-        else:  # Color - work on all channels
-            contrasted = denoised.copy()
-            for i in range(3):
-                clahe = cv2.createCLAHE(clipLimit=5.0, tileGridSize=(2, 2))
-                contrasted[:, :, i] = clahe.apply(denoised[:, :, i])
-        
-        # STEP 3: EXTREME sharpening with multiple passes
-        # Pass 1: Very aggressive
-        blurred1 = cv2.GaussianBlur(contrasted, (0, 0), 1.0)
-        sharp1 = cv2.addWeighted(contrasted, 2.5, blurred1, -1.5, 0)
-        
-        # Pass 2: Additional sharpening
-        blurred2 = cv2.GaussianBlur(sharp1, (0, 0), 0.5)
-        sharp2 = cv2.addWeighted(sharp1, 1.5, blurred2, -0.5, 0)
-        
-        # Pass 3: Fine detail sharpening
-        blurred3 = cv2.GaussianBlur(sharp2, (0, 0), 0.3)
-        final = cv2.addWeighted(sharp2, 1.3, blurred3, -0.3, 0)
-        
-        # STEP 4: Morphological detail enhancement
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        gradient = cv2.morphologyEx(final, cv2.MORPH_GRADIENT, kernel)
-        final = cv2.addWeighted(final, 1.0, gradient, 0.5, 0)
-        
-        # STEP 5: Edge preservation and clarity boost
-        edges = cv2.Canny(final, 50, 150)
-        edges_dilated = cv2.dilate(edges, kernel, iterations=1)
-        final = cv2.addWeighted(final, 1.0, cv2.cvtColor(edges_dilated, cv2.COLOR_GRAY2BGR) if len(final.shape) == 3 else edges_dilated, 0.2, 0)
+            
+            # STEP 3: EXTREME unsharp masking (Pass 1)
+            blurred1 = cv2.GaussianBlur(contrasted, (0, 0), 1.0)
+            high_pass1 = cv2.subtract(contrasted, blurred1)
+            sharpened1 = cv2.addWeighted(contrasted, 1.0, high_pass1, 3.5, 0)  # 3.5x strength!
+            sharpened1 = np.clip(sharpened1, 0, 255).astype(np.uint8)
+            
+            # STEP 4: EXTRA unsharp masking (Pass 2)
+            blurred2 = cv2.GaussianBlur(sharpened1, (0, 0), 1.5)
+            high_pass2 = cv2.subtract(sharpened1, blurred2)
+            sharpened2 = cv2.addWeighted(sharpened1, 1.0, high_pass2, 2.0, 0)
+            sharpened2 = np.clip(sharpened2, 0, 255).astype(np.uint8)
+            
+            # STEP 5: Edge enhancement kernel
+            edge_kernel = np.array([[-2, -1,  0],
+                                   [-1,  1,  1],
+                                   [ 0,  1,  2]], dtype=np.float32)
+            edges = cv2.filter2D(sharpened2, -1, edge_kernel)
+            final = cv2.addWeighted(sharpened2, 0.9, np.abs(edges), 0.1, 0)
+            
+        else:  # Color image - process ONLY brightness channel!
+            # Convert to LAB color space
+            lab = cv2.cvtColor(work_image, cv2.COLOR_BGR2LAB)
+            L, A, B = cv2.split(lab)
+            
+            # STEP 1: Minimal denoising to preserve details - ONLY on L
+            L_denoised = cv2.bilateralFilter(L, 5, 50, 50)
+            
+            # STEP 2: AGGRESSIVE contrast enhancement - ONLY on L
+            clahe = cv2.createCLAHE(clipLimit=5.0, tileGridSize=(2, 2))
+            L_contrasted = clahe.apply(L_denoised)
+            
+            # STEP 3: EXTREME unsharp masking (Pass 1) - ONLY on L
+            L_blurred1 = cv2.GaussianBlur(L_contrasted, (0, 0), 1.0)
+            L_high_pass1 = cv2.subtract(L_contrasted, L_blurred1)
+            L_sharpened1 = cv2.addWeighted(L_contrasted, 1.0, L_high_pass1, 3.5, 0)  # 3.5x strength!
+            L_sharpened1 = np.clip(L_sharpened1, 0, 255).astype(np.uint8)
+            
+            # STEP 4: EXTRA unsharp masking (Pass 2) - ONLY on L
+            L_blurred2 = cv2.GaussianBlur(L_sharpened1, (0, 0), 1.5)
+            L_high_pass2 = cv2.subtract(L_sharpened1, L_blurred2)
+            L_sharpened2 = cv2.addWeighted(L_sharpened1, 1.0, L_high_pass2, 2.0, 0)
+            L_sharpened2 = np.clip(L_sharpened2, 0, 255).astype(np.uint8)
+            
+            # STEP 5: Edge enhancement kernel - ONLY on L
+            edge_kernel = np.array([[-2, -1,  0],
+                                   [-1,  1,  1],
+                                   [ 0,  1,  2]], dtype=np.float32)
+            L_edges = cv2.filter2D(L_sharpened2, -1, edge_kernel)
+            L_final = cv2.addWeighted(L_sharpened2, 0.9, np.abs(L_edges).astype(np.uint8), 0.1, 0)
+            
+            # Clip brightness channel
+            L_final = np.clip(L_final, 0, 255).astype(np.uint8)
+            
+            # Recombine with ORIGINAL A and B channels (colors unchanged!)
+            lab_enhanced = cv2.merge([L_final, A, B])
+            final = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
         
         # Clip and ensure valid range
         final = np.clip(final, 0, 255).astype(np.uint8)
@@ -230,8 +284,9 @@ class ImageEnhancer:
                            denoise_strength: float = 0.7,
                            enhance_strength: float = 0.5) -> np.ndarray:
         """
-        AGGRESSIVE Combined denoising and enhancement pipeline
-        Best for: Blurry, noisy, distorted images - STRONG improvement
+        SMART Combined enhancement - Gentle denoise + Unsharp masking + CLAHE on BRIGHTNESS ONLY
+        Optimized for blurry/distorted images (SHARPENING-FIRST strategy)
+        NOTE: Only brightness is enhanced - COLORS REMAIN UNCHANGED!
         
         Args:
             image: Input image
@@ -239,7 +294,7 @@ class ImageEnhancer:
             enhance_strength: Enhancement weight (0-1)
         
         Returns:
-            Enhanced image
+            Enhanced image (sharper, colors preserved)
         """
         # Ensure uint8 format for processing
         if image.dtype != np.uint8:
@@ -247,35 +302,55 @@ class ImageEnhancer:
         else:
             image_work = image.copy()
         
-        # Step 1: AGGRESSIVE Bilateral denoising (stronger parameters)
-        denoised = cv2.bilateralFilter(image_work, 15, 80, 80)
-        denoised = cv2.bilateralFilter(denoised, 15, 80, 80)  # Double pass for more denoising
-        
-        # Step 2: AGGRESSIVE Contrast Enhancement with high CLAHE
+        # Work in LAB color space - process only L (brightness) channel
         if len(image_work.shape) == 2:  # Grayscale
-            clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(4, 4))  # Much stronger
-            enhanced = clahe.apply(denoised)
-        else:  # Color
-            lab = cv2.cvtColor(denoised, cv2.COLOR_BGR2LAB)
-            clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(4, 4))  # Much stronger
-            lab[:, :, 0] = clahe.apply(lab[:, :, 0])
-            enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+            # Step 1: Light denoising
+            denoised = cv2.bilateralFilter(image_work, 7, 50, 50)
+            
+            # Step 2: Smart unsharp masking
+            blurred = cv2.GaussianBlur(denoised, (0, 0), 1.5)
+            high_pass = cv2.subtract(denoised, blurred)
+            sharpened = cv2.addWeighted(denoised, 1.0, high_pass, 1.8, 0)
+            
+            # Step 3: Contrast Enhancement
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            enhanced = clahe.apply(sharpened)
+            
+            # Step 4: Morphological edge enhancement
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            gradient = cv2.morphologyEx(enhanced, cv2.MORPH_GRADIENT, kernel)
+            final = cv2.addWeighted(enhanced, 1.0, gradient, 0.4, 0)
+            
+        else:  # Color image - process ONLY brightness channel!
+            # Convert to LAB color space
+            lab = cv2.cvtColor(image_work, cv2.COLOR_BGR2LAB)
+            L, A, B = cv2.split(lab)
+            
+            # Step 1: Light denoising - ONLY on L channel
+            L_denoised = cv2.bilateralFilter(L, 7, 50, 50)
+            
+            # Step 2: Smart unsharp masking - ONLY on L channel
+            L_blurred = cv2.GaussianBlur(L_denoised, (0, 0), 1.5)
+            L_high_pass = cv2.subtract(L_denoised, L_blurred)
+            L_sharpened = cv2.addWeighted(L_denoised, 1.0, L_high_pass, 1.8, 0)
+            
+            # Step 3: Contrast Enhancement - ONLY on L channel
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            L_enhanced = clahe.apply(L_sharpened)
+            
+            # Step 4: Morphological edge enhancement - ONLY on L channel
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            L_gradient = cv2.morphologyEx(L_enhanced, cv2.MORPH_GRADIENT, kernel)
+            L_final = cv2.addWeighted(L_enhanced, 1.0, L_gradient, 0.4, 0)
+            
+            # Clip brightness channel
+            L_final = np.clip(L_final, 0, 255).astype(np.uint8)
+            
+            # Recombine with ORIGINAL A and B channels (colors unchanged!)
+            lab_enhanced = cv2.merge([L_final, A, B])
+            final = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
         
-        # Step 3: AGGRESSIVE Unsharp masking for sharpening (multiple passes)
-        # First pass - strong sharpening
-        blurred1 = cv2.GaussianBlur(enhanced, (0, 0), 1.5)
-        sharpened1 = cv2.addWeighted(enhanced, 2.0, blurred1, -1.0, 0)
-        
-        # Second pass - edge enhancement
-        blurred2 = cv2.GaussianBlur(sharpened1, (0, 0), 0.5)
-        sharpened2 = cv2.addWeighted(sharpened1, 1.3, blurred2, -0.3, 0)
-        
-        # Step 4: Morphological enhancement for edge clarity
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        gradient = cv2.morphologyEx(sharpened2, cv2.MORPH_GRADIENT, kernel)
-        final = cv2.addWeighted(sharpened2, 1.0, gradient, 0.3, 0)
-        
-        # Clip values to valid range
+        # Clip and ensure valid range
         final = np.clip(final, 0, 255).astype(np.uint8)
         
         # Convert back to original format if needed
