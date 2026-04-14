@@ -3,7 +3,6 @@ import matplotlib.patches as mpatches
 from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
 import matplotlib.patheffects as pe
 
-# ── Canvas setup ──────────────────────────────────────────────────────────────
 fig, ax = plt.subplots(figsize=(14, 20))
 ax.set_xlim(0, 14)
 ax.set_ylim(0, 20)
@@ -11,7 +10,6 @@ ax.axis("off")
 fig.patch.set_facecolor("#F8F9FA")
 ax.set_facecolor("#F8F9FA")
 
-# ── Color palette ─────────────────────────────────────────────────────────────
 COLORS = {
     "gray_fill":    "#E8E8E6",
     "gray_stroke":  "#5F5E5A",
@@ -34,7 +32,6 @@ COLORS = {
     "text_light":   "#6B6B6B",
 }
 
-# ── Helper functions ───────────────────────────────────────────────────────────
 
 def draw_box(ax, x, y, w, h, fill, stroke, title, subtitle=None, radius=0.25):
     """Draw a rounded rectangle with title and optional subtitle."""
@@ -98,16 +95,10 @@ def label_arrow(ax, x, y, text, color="#6B6B6B"):
     ax.text(x, y, text, ha="center", va="center",
             fontsize=7.5, color=color, style="italic", zorder=6)
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TITLE
-# ══════════════════════════════════════════════════════════════════════════════
 ax.text(7, 19.55, "Image Quality Assessment & Enhancement — Full Pipeline",
         ha="center", va="center", fontsize=13, fontweight="bold",
         color=COLORS["text_dark"])
 
-# ══════════════════════════════════════════════════════════════════════════════
-# BASE PROJECT SECTION  (y: 11.8 → 19.1)
-# ══════════════════════════════════════════════════════════════════════════════
 draw_section(ax, 0.4, 11.8, 13.2, 7.1,
              COLORS["base_bg"], COLORS["base_border"],
              "Base Project — Quality Assessment")
@@ -150,9 +141,6 @@ draw_box(ax, 7.8, 13.7, 5.4, 0.75,
          "Distortion Scores",
          "Blurry · Shaky · Bright · Dark · Grainy")
 
-# ══════════════════════════════════════════════════════════════════════════════
-# EXTENSION SECTION  (y: 0.4 → 11.6)
-# ══════════════════════════════════════════════════════════════════════════════
 draw_section(ax, 0.4, 0.4, 13.2, 11.2,
              COLORS["ext_bg"], COLORS["ext_border"],
              "Extension — Adaptive Enhancement Pipeline")
@@ -174,7 +162,6 @@ arrow(ax, 8.5, 12.05, 10.8, 11.2, COLORS["amber_stroke"])
 label_arrow(ax, 2.6, 11.55, "Mode A")
 label_arrow(ax, 11.4, 11.55, "Mode B")
 
-# ── MODE A: One-shot ──────────────────────────────────────────────────────────
 draw_box(ax, 0.6, 10.35, 5.2, 0.75,
          COLORS["blue_fill"], COLORS["blue_stroke"],
          "One-Shot Enhancement",
@@ -187,7 +174,6 @@ draw_box(ax, 0.6, 8.8, 5.2, 0.8,
          "Apply Targeted Filters",
          "Sharpen · Denoise · Brightness · Gamma · Combined")
 
-# ── MODE B: Iterative ─────────────────────────────────────────────────────────
 draw_box(ax, 8.2, 10.35, 5.2, 0.75,
          COLORS["coral_fill"], COLORS["coral_stroke"],
          "Iterative Adaptive Enhancement",
@@ -210,7 +196,6 @@ ax.plot([13.2, 13.5], [10.72, 10.72], color=COLORS["coral_stroke"], lw=1.2,
 ax.text(13.55, 9.96, "loop", ha="left", va="center", fontsize=7.5,
         color=COLORS["coral_stroke"], style="italic")
 
-# ── Merge to final output ─────────────────────────────────────────────────────
 arrow(ax, 3.2, 8.8, 3.2, 8.1, COLORS["blue_stroke"])
 arrow(ax, 10.8, 8.8, 10.8, 8.1, COLORS["coral_stroke"])
 
@@ -233,9 +218,6 @@ draw_box(ax, 3.5, 4.9, 7.0, 0.75,
          "Output to User / Assistive System",
          "OCR  ·  Object detection  ·  Human review")
 
-# ══════════════════════════════════════════════════════════════════════════════
-# LEGEND
-# ══════════════════════════════════════════════════════════════════════════════
 legend_y = 0.78
 legend_items = [
     (COLORS["base_bg"],  COLORS["base_border"],  "Base Project — Quality Assessment"),
@@ -256,9 +238,6 @@ for i, (fill, stroke, label) in enumerate(legend_items):
     ax.text(bx + 0.45, legend_y, label, ha="left", va="center",
             fontsize=6.8, color=COLORS["text_mid"], zorder=7)
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SAVE
-# ══════════════════════════════════════════════════════════════════════════════
 plt.tight_layout(pad=0.3)
 plt.savefig("workflow_diagram.png", dpi=200, bbox_inches="tight",
             facecolor=fig.get_facecolor())
