@@ -1,3 +1,6 @@
+# Demo Video
+https://youtu.be/Od7IS1eLqcU
+
 # visimpaired
 This repository contains the dataset and models proposed in the paper - ***'Helping Visually Impaired People Take Better Quality Pictures'***. If this work helps in you research, please cite us -
 
